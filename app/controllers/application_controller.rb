@@ -18,12 +18,10 @@
 
 class ApplicationController < ActionController::Base
   include BbbServer
+  include Errors
 
-  before_action :redirect_to_https, :set_user_domain, :set_user_settings, :maintenance_mode?, :migration_error?,
-    :user_locale, :check_admin_password, :check_user_role
-
-  # Manually handle BigBlueButton errors
-  rescue_from BigBlueButton::BigBlueButtonException, with: :handle_bigbluebutton_error
+  before_action :block_unknown_hosts, :redirect_to_https, :set_user_domain, :set_user_settings, :maintenance_mode?,
+  :migration_error?, :user_locale, :check_admin_password, :check_user_role
 
   protect_from_forgery with: :exceptions
 
@@ -45,6 +43,12 @@ class ApplicationController < ActionController::Base
 
   def bbb_server
     @bbb_server ||= Rails.configuration.loadbalanced_configuration ? bbb(@user_domain) : bbb("greenlight")
+  end
+
+  # Block unknown hosts to mitigate host header injection attacks
+  def block_unknown_hosts
+    return if Rails.configuration.hosts.blank?
+    raise UnsafeHostError, "#{request.host} is not a safe host" unless Rails.configuration.hosts.include?(request.host)
   end
 
   # Force SSL
@@ -82,7 +86,7 @@ class ApplicationController < ActionController::Base
     end
     if Rails.configuration.maintenance_window.present?
       unless cookies[:maintenance_window] == Rails.configuration.maintenance_window
-        flash.now[:maintenance] = I18n.t("maintenance.window_alert", date: Rails.configuration.maintenance_window)
+        flash.now[:maintenance] = Rails.configuration.maintenance_window
       end
     end
   end
@@ -193,8 +197,9 @@ class ApplicationController < ActionController::Base
     payload[:host] = @user_domain
   end
 
-  # Manually Handle BigBlueButton errors
-  def handle_bigbluebutton_error
+  # Manually handle BigBlueButton errors
+  rescue_from BigBlueButton::BigBlueButtonException do |ex|
+    logger.error "BigBlueButtonException: #{ex}"
     render "errors/bigbluebutton_error"
   end
 
